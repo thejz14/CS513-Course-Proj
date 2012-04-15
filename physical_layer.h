@@ -5,7 +5,6 @@
 #include <queue>
 #include <string>
 #include <pthread.h>
-#include "datalink_layer.h"
 using namespace std;
 
 
@@ -16,8 +15,8 @@ public:
 	
 	static void startServer(double errRate);
 	
-	void ph_send(Frame*);
-	void ph_recv(Frame*)
+	void ph_send(string, uint16_t);
+	string ph_recv();
 	
 private:
 
@@ -25,8 +24,8 @@ private:
 	void tryToSend();
 	void tryToRecv();
 
-	queue<Frame_t*> sendQueue;
-	queue<Frame_t*> recvQueue;
+	queue<pair<string, uint16_t> > sendQueue;
+	queue<string> recvQueue;
 
 	pthread_mutex_t sendLock;
 	pthread_mutex_t recvLock;

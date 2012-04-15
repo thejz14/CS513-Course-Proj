@@ -7,6 +7,9 @@
 #include <string>
 #include <utility>
 #include <sys/time.h>
+#include <signal.h>
+#include <time.h>
+#include "physical_layer.h"
 using namespace std;
 
 //frame def
@@ -37,6 +40,7 @@ typedef union{
 #define FRAME_HEADER_SIZE	(uint8_t)7
 #define FRAME_TRAILER_SIZE	(uint8_t)4
 
+
 class DL_Layer
 {
 public:
@@ -45,26 +49,94 @@ public:
 
 	static void *DLCreate(void* phPtr) { new DL_Layer(phPtr); };
 
+	static void disableSigalrm(void);
+	static void enableSigalrm(void);
+
+	void resendFrame(void); //helper method for timerISR() used to resend the frame that just timed out
+	void restartTimer(void); //helper method for timerISR() used to restart the timer after a time out
+
 	static const char* StartDelim;
 	static const char* EndDelim;
 	static const uint8_t DelimSize = 2;
 
 private:
+
+	typedef enum { eDataPacket = 1, eDataEndPacket = 2, eAckPacket = 3} FrameType_t;
+
 	void startControlLoop(void);
 	void tryToSend(void);
+	void createFrames(string);
 	void tryToRecv(void);
+	void recvDataPacket(Frame_t*);
+	uint16_t computeChecksum(Frame_t*);
+	bool verifyChecksum(Frame_t*);
+	string byteStuff(Frame_t*);
+	Frame_t* byteUnstuff(string);
 
-	queue<std::string> sendQueue;
-	queue<std::string> recvQueue;
+	void sendFrame(Frame_t*);
+	void sendAck(Frame_t*);
+	void updateSendWindow(uint16_t);
 
-	queue<pair<Frame_t*, timeval> > sendWindow;
-	const uint16_t maxSendWindow;
-	uint16_t recvWindows;
 
-	void* ph_layer;
+	void initializeTimer(void);
+	void startTimer(timeval);
 
-	pthread_mutex_t sendLock;
-	pthread_mutex_t recvLock;
+
+	queue<std::string> sendQueue; //send queue between app and dl layer
+	queue<std::string> recvQueue; //recv queue between app and dl layer
+
+	PH_Layer* ph_layer; // used to call ph_send()/ph_recv() for interface between physical and dl layer
+
+	pthread_mutex_t sendLock;// used to lock sendQueue
+	pthread_mutex_t recvLock;// used to lock recvQueue
+
+	static const uint16_t MaxMessageSize = 256; //Max size of message contained in sendQueue or recvQueue
+	static const uint16_t MaxPayloadSize = 128;
+
+	const uint16_t TimeoutDuration; //Duration since frame sent that causes a timeout
+
+	uint16_t currentSeqNum; //The next available sequence number for a new frame that is going to be sent
+
+	timer_t timer_id; //ID of the timer used for timeouts
+
+	/*
+	 * This class is used in compairing the timestamps of each frame in the sendWindow to order the queue
+	 * with the frame with the earliest timeout first
+	 */
+	class CompareTimeEval {
+	    public:
+	    bool operator()(pair<Frame_t*, timeval>& t1, pair<Frame_t*, timeval>& t2) // Returns true if t1 is earlier than t2
+	    {
+	    	if(t1.second.tv_sec > t2.second.tv_sec)
+	    	{
+	    		return true;
+	    	}
+	    	else if(t1.second.tv_sec == t2.second.tv_sec)
+	    	{
+	    		if(t1.second.tv_usec >= t2.second.tv_usec)
+	    		{
+	    			return true;
+	    		}
+	    		else
+	    		{
+	    			return false;
+	    		}
+	    	}
+	    	else
+	    	{
+	    		return false;
+	    	}
+	    }
+	};
+
+	/*
+	 * A queue of the frames which have currently been transmitted and for which an ACK has not been received
+	 * Note: the frames in this queue are not byte stuffed
+	 */
+	priority_queue< pair<Frame_t*, timeval>, vector<pair<Frame_t*, timeval> >, CompareTimeEval> sendWindow;
+	queue<Frame_t*> waitQueue;
+	const uint16_t MaxSendWindow; //Maximum size of the sendWindow Queue
+	uint16_t recvWindow; //Sequence number of the next expected frame
 };
 
 #endif

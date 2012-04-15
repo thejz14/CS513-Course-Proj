@@ -13,19 +13,21 @@
 #// make clean			--clean all temporary *~ / *.o files and executable FTP_Server/FTP_Client
 
 
+server_objects = physical_layer.o datalink_layer.o
+server_source = physical_layer.cpp datalink_layer.cpp
+
 #// make
-all: physical_layer.o datalink_layer.o
+all: testProg
 
-EnhancedEchoServer:     ejf_EnhancedEchoServer.o
+testProg: $(server_source)
+	g++ $(server_source) -o testProg -lpthread -lrt
 
-EnhancedEchoClient:     ejf_EnhancedEchoClient.o
+physical_layer.o: physical_layer.cpp
+	g++ -c physical_layer.cpp 
 
-ejf_EnhancedEchoServer.o: ejf_EnhancedEchoServer.cpp
-        g++ ejf_EnhancedEchoServer.cpp -o ejf_EnhancedEchoServer
-
-ejf_EnhancedEchoClient.o: ejf_EnhancedEchoClient.cpp
-        g++ ejf_EnhancedEchoClient.cpp -o ejf_EnhancedEchoClient
+datalink_layer.o: datalink_layer.cpp
+	g++ -c datalink_layer.cpp
 
 clean:
-      	rm -f *.o
-
+	rm -f *.o
+	rm -f testProg
