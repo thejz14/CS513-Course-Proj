@@ -25,18 +25,8 @@ const char* PH_Layer::port = "2012";
  */
 bool gLayerOutput = true;
 
-int main(int argc, char *argv[])
-{
 
-	if(argc != 2)
-	{
-		cout << "Incorrect parameters: not sure what they are yet" << endl;
-		exit(0);
-	}
-	PH_Layer::startServer(atof(argv[1]));
-}
-
-PH_Layer::PH_Layer(int32_t sockFD, double errRate) : socketFD(sockFD), errorRate(errRate)
+PH_Layer::PH_Layer(int32_t sockFD, double errRate, bool isServ) : socketFD(sockFD), errorRate(errRate)
 {
 	//check error rate
 	if(errorRate > 1.0 || errorRate < 0.0)
@@ -58,7 +48,11 @@ PH_Layer::PH_Layer(int32_t sockFD, double errRate) : socketFD(sockFD), errorRate
 	//make sure the physical layer doesn't receive the timeout signal
 	DL_Layer::disableSigalrm();
 
-	pthread_create(&dl_thread, NULL, DL_Layer::DLCreate, reinterpret_cast<void*>(this));
+	DL_Layer::ThreadParams_t* dlParams = new DL_Layer::ThreadParams_t;
+	dlParams->thisPtr = this;
+	dlParams->isServer = isServ;
+
+	pthread_create(&dl_thread, NULL, DL_Layer::DLCreate, reinterpret_cast<void*>(&dlParams));
 	
 	startControlLoop();
 }
@@ -118,7 +112,7 @@ void PH_Layer::startServer(double errRate)
 			close(listenSD);
 			
 			//should create layers and then start the control loop of recv/send
-			currentPHInstance = new PH_Layer(clientSD, errRate);
+			currentPHInstance = new PH_Layer(clientSD, errRate, true);
 
 			exit(0);
 

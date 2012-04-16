@@ -11,7 +11,7 @@ using namespace std;
 class PH_Layer
 {
 public:
-	PH_Layer(int32_t sockFD, double errRate);
+	PH_Layer(int32_t sockFD, double errRate, bool isServer);
 	
 	static void startServer(double errRate);
 	

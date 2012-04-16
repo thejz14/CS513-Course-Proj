@@ -6,6 +6,7 @@
 #include <string.h>
 #include <algorithm>
 #include "Output_macros.h"
+#include "server_appLayer.h"
 using namespace std;
 
 /*
@@ -27,7 +28,7 @@ const char* DL_Layer::StartDelim = new char[2]{0x10, 0x02};
 const char* DL_Layer::EndDelim = new char[2]{0x10, 0x03};
 
 
-DL_Layer::DL_Layer(void* phPtr): ph_layer(reinterpret_cast<PH_Layer*>(phPtr)),
+DL_Layer::DL_Layer(void* params): ph_layer(reinterpret_cast<PH_Layer*>(reinterpret_cast<ThreadParams_t*>(params)->thisPtr)),
 								 MaxSendWindow(4),
 								 currentSeqNum(0),
 								 recvWindow(0),
@@ -36,10 +37,20 @@ DL_Layer::DL_Layer(void* phPtr): ph_layer(reinterpret_cast<PH_Layer*>(phPtr)),
 	//initialize locks
 	pthread_mutex_init(&sendLock, NULL);
 	pthread_mutex_init(&recvLock, NULL);
+	pthread_cond_init(&sendQueueNotFull, NULL);
+	pthread_cond_init(&recvdMsg, NULL);
 
 	//timer setup for later use
 	initializeTimer();
 
+	if(reinterpret_cast<ThreadParams_t*>(params)->isServer)
+	{
+		pthread_create(&app_thread, NULL, ServerApp::SAPCreate, reinterpret_cast<void*>(this));
+	}
+	else
+	{
+		//TODO Client layer
+	}
 	startControlLoop();
 }
 
@@ -55,6 +66,8 @@ void DL_Layer::startControlLoop()
 
 void DL_Layer::tryToSend()
 {
+	int lockReturn = 0;
+
 	//first check if there is room in the send window and that there are not frames already waiting to be sent
 	while(sendWindow.size() < MaxSendWindow && !waitQueue.empty())
 	{
@@ -65,22 +78,24 @@ void DL_Layer::tryToSend()
 	}
 
 	//Now process messages from the app layer (create frames and send if possible)
-	if(pthread_mutex_lock(&sendLock) == 0)
+	while((lockReturn = pthread_mutex_lock(&sendLock)) == 0 && sendQueue.size() > 0)	//there are messages from the app layer to send
 	{
-		if(sendQueue.size() > 0)	//there are messages from the app layer to send
-		{
-			//get next message
-			string message = sendQueue.front();
-			sendQueue.pop();
+		//get next message
+		string message = sendQueue.front();
+		sendQueue.pop();
 
-			pthread_mutex_unlock(&sendLock);
+		pthread_mutex_unlock(&sendLock);
 
-			createFrames(message);
-		}
+		createFrames(message);
 	}
-	else
+	if(lockReturn != 0)
 	{
 		cout << "ERROR: Unable to get the send lock in DL Layer tryToSend()\n";
+	}
+
+	if(sendWindow.size() < MaxSendWindow)
+	{
+		pthread_cond_signal(&sendQueueNotFull);
 	}
 }
 
@@ -185,6 +200,9 @@ void DL_Layer::recvDataPacket(Frame_t* frame)
 		{
 			recvQueue.push(dataBuffer);
 			pthread_mutex_unlock(&recvLock);
+
+			//wake a possible waiting app layer
+			pthread_cond_signal(&recvdMsg);
 
 			dataBuffer.clear(); //erase the message to setup for a new message
 		}
@@ -477,4 +495,37 @@ void DL_Layer::sendAck(uint16_t sNum)
 	{
 		waitQueue.push(frame);
 	}
+}
+
+void DL_Layer::dl_send(string message)
+{
+	pthread_mutex_lock(&sendLock);
+
+	while(sendWindow.size() + waitQueue.size() == MaxSendWindow)
+	{
+		pthread_cond_wait(&sendQueueNotFull, &sendLock);
+	}
+
+	sendQueue.push(message);
+
+	pthread_mutex_unlock(&sendLock);
+}
+
+string DL_Layer::dl_recv()
+{
+	string message;
+
+	pthread_mutex_lock(&recvLock);
+
+	while(recvQueue.size() == 0)
+	{
+		pthread_cond_wait(&recvdMsg, &recvLock);
+	}
+
+	message = recvQueue.front();
+	recvQueue.pop();
+
+	pthread_mutex_unlock(&recvLock);
+
+	return message;
 }

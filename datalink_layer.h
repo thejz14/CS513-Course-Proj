@@ -50,6 +50,9 @@ public:
 
 	static void *DLCreate(void* phPtr) { new DL_Layer(phPtr); };
 
+	void dl_send(string);
+	string dl_recv(void);
+
 	static void disableSigalrm(void);
 	static void enableSigalrm(void);
 
@@ -60,9 +63,9 @@ public:
 	static const char* EndDelim;
 	static const uint8_t DelimSize = 2;
 
-private:
+	typedef struct {void* thisPtr; bool isServer;} ThreadParams_t;
 
-	typedef enum { eDataPacket = 1, eDataEndPacket = 2, eAckPacket = 3} FrameType_t;
+private:
 
 	void startControlLoop(void);
 	void tryToSend(void);
@@ -82,14 +85,18 @@ private:
 	void initializeTimer(void);
 	void startTimer(timeval);
 
+	typedef enum { eDataPacket = 1, eDataEndPacket = 2, eAckPacket = 3} FrameType_t;
 
 	queue<std::string> sendQueue; //send queue between app and dl layer
 	queue<std::string> recvQueue; //recv queue between app and dl layer
 
 	PH_Layer* ph_layer; // used to call ph_send()/ph_recv() for interface between physical and dl layer
+	pthread_t app_thread;
 
 	pthread_mutex_t sendLock;// used to lock sendQueue
 	pthread_mutex_t recvLock;// used to lock recvQueue
+	pthread_cond_t sendQueueNotFull;
+	pthread_cond_t recvdMsg;
 
 	static const uint16_t MaxMessageSize = 256; //Max size of message contained in sendQueue or recvQueue
 	static const uint16_t MaxPayloadSize = 128;

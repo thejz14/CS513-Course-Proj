@@ -14,19 +14,18 @@
 
 
 server_objects = physical_layer.o datalink_layer.o
-server_source = physical_layer.cpp datalink_layer.cpp
+server_source = physical_layer.cpp datalink_layer.cpp server_appLayer.cpp client_appLayer.cpp server_main.cpp
+
+client_source = physical_layer.cpp datalink_layer.cpp client_appLayer.cpp server_appLayer.cpp client_main.cpp
 
 #// make
-all: testProg
+all: server client
 
-testProg: $(server_source)
-	g++ $(server_source) -o testProg -lpthread -lrt
+server: $(server_source)
+	g++ $(server_source) -o server -lpthread -lrt
 
-physical_layer.o: physical_layer.cpp
-	g++ -c physical_layer.cpp 
-
-datalink_layer.o: datalink_layer.cpp
-	g++ -c datalink_layer.cpp
+client: $(client_source)
+	g++ $(client_source) -o client -lpthread -lrt
 
 clean:
 	rm -f *.o
