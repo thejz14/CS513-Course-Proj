@@ -4,6 +4,7 @@
 #include <stdint.h>
 #include <pthread.h>
 #include <queue>
+#include <vector>
 #include <string>
 #include <utility>
 #include <sys/time.h>
@@ -74,7 +75,7 @@ private:
 	Frame_t* byteUnstuff(string);
 
 	void sendFrame(Frame_t*);
-	void sendAck(Frame_t*);
+	void sendAck(uint16_t);
 	void updateSendWindow(uint16_t);
 
 
@@ -100,40 +101,38 @@ private:
 	timer_t timer_id; //ID of the timer used for timeouts
 
 	/*
-	 * This class is used in compairing the timestamps of each frame in the sendWindow to order the queue
+	 * This struct is used in compairing the timestamps of each frame in the sendWindow to order the queue
 	 * with the frame with the earliest timeout first
 	 */
-	class CompareTimeEval {
-	    public:
-	    bool operator()(pair<Frame_t*, timeval>& t1, pair<Frame_t*, timeval>& t2) // Returns true if t1 is earlier than t2
-	    {
-	    	if(t1.second.tv_sec > t2.second.tv_sec)
-	    	{
-	    		return true;
-	    	}
-	    	else if(t1.second.tv_sec == t2.second.tv_sec)
-	    	{
-	    		if(t1.second.tv_usec >= t2.second.tv_usec)
-	    		{
-	    			return true;
-	    		}
-	    		else
-	    		{
-	    			return false;
-	    		}
-	    	}
-	    	else
-	    	{
-	    		return false;
-	    	}
-	    }
+	struct compareTimeval {
+	    bool operator()(const pair<Frame_t*, timeval> t1, const pair<Frame_t*, timeval> t2) // Returns true if t1 is earlier than t2
+		{
+			if(t1.second.tv_sec > t2.second.tv_sec)
+		    {
+		    	return true;
+			}
+		    else if(t1.second.tv_sec == t2.second.tv_sec)
+		    {
+		    	if(t1.second.tv_usec >= t2.second.tv_usec)
+		    	{
+		    		return true;
+		    	}
+		    	else
+		    	{
+		    		return false;
+		    	}
+		    }
+		    else
+		    {
+		    	return false;
+		    }
+		}
 	};
-
 	/*
 	 * A queue of the frames which have currently been transmitted and for which an ACK has not been received
 	 * Note: the frames in this queue are not byte stuffed
 	 */
-	priority_queue< pair<Frame_t*, timeval>, vector<pair<Frame_t*, timeval> >, CompareTimeEval> sendWindow;
+	vector< pair<Frame_t*, timeval> > sendWindow;
 	queue<Frame_t*> waitQueue;
 	const uint16_t MaxSendWindow; //Maximum size of the sendWindow Queue
 	uint16_t recvWindow; //Sequence number of the next expected frame

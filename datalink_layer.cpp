@@ -4,6 +4,8 @@
 #include <iostream>
 #include <netinet/in.h>
 #include <string.h>
+#include <algorithm>
+#include "Output_macros.h"
 using namespace std;
 
 /*
@@ -15,6 +17,8 @@ void timeoutISR(int);
  * File static definitions
  */
 static DL_Layer* dl_layer;
+
+
 
 /*
  * Class static definitions
@@ -83,6 +87,7 @@ void DL_Layer::tryToSend()
 void DL_Layer::tryToRecv()
 {
 	string frameStream;
+
 	while((frameStream = ph_layer->ph_recv()) != "") //while something is received
 	{
 		Frame_t* frame = byteUnstuff(frameStream);
@@ -92,29 +97,79 @@ void DL_Layer::tryToRecv()
 			if(frame->fld.type == eAckPacket)
 			{
 				updateSendWindow(frame->fld.seqNum);
+				LAYER_OUTPUT("DL lyaer: ACK recevied for " << frame->fld.seqNum << "\n");
 			}
 			else
 			{
 				if(frame->fld.seqNum == recvWindow)
 				{
-					sendAck(frame);
+					sendAck(frame->fld.seqNum);
 					recvDataPacket(frame);
 
 					recvWindow++;
+
+					LAYER_OUTPUT("DL layer:Received packet "<< frame->fld.seqNum << ". Sending Ack\n");
 				}
 				else
 				{
-
+					LAYER_OUTPUT("DL layer:Dropping packet " << frame->fld.seqNum << ". Recv window currently is: " << recvWindow << "\n");
 				}
 			}
-		}//else corrupted frame
+		}
+		else
+		{
+			LAYER_OUTPUT("DL layer: Corrupted frame received\n");
+		}
+
 		delete(frame);
 	}
 }
 
 void DL_Layer::updateSendWindow(uint16_t recvdSeqNum)
 {
-	if(recvdSeqNum == )
+	if(recvdSeqNum >= currentSeqNum)	//could not have been sent, ignore
+	{
+		cout << "Error: ACK received for unsent frame. Received seq # is " << recvdSeqNum << endl;
+	}
+	else
+	{
+		//go through the sendWindow and remove ack'd frames
+		Frame_t* frame = NULL;
+		bool timerUpdateRequired = false;
+
+		for(vector<pair<Frame_t*, timeval> >::iterator i = sendWindow.begin(); i != sendWindow.end(); )
+		{
+			if((*i).first->fld.seqNum <= recvdSeqNum)
+			{
+				//remove the frame
+				frame = (*i).first;
+				sendWindow.erase(i);
+
+				if(i == sendWindow.begin())
+				{
+					timerUpdateRequired = true;
+				}
+			}
+			else
+			{
+				i++;
+			}
+		}
+
+		if(timerUpdateRequired)
+		{
+			if(sendWindow.size() > 0)
+			{
+				restartTimer();
+			}
+			else //disable timer
+			{
+				timeval disableTimer = {0};
+
+				startTimer(disableTimer);
+			}
+		}
+	}
 }
 
 void DL_Layer::recvDataPacket(Frame_t* frame)
@@ -199,7 +254,7 @@ void DL_Layer::sendFrame(Frame_t* frame)
 	timeout.tv_sec += TimeoutDuration;
 
 	//add the frame to the send window
-	sendWindow.push(make_pair(frame,timeout));
+	sendWindow.push_back(make_pair(frame,timeout));
 
 	ph_layer->ph_send(frameStream, frame->fld.seqNum);
 
@@ -278,8 +333,11 @@ void timeoutISR(int signNum)
  ****************************************************************************************/
 void DL_Layer::resendFrame()
 {
-	Frame_t* frame = sendWindow.top().first;
-	sendWindow.pop();
+	//sort the send window by timestamp
+	sort(sendWindow.begin(), sendWindow.end(), compareTimeval());
+
+	Frame_t* frame = sendWindow.front().first;
+	sendWindow.erase(sendWindow.begin());
 
 	sendFrame(frame);
 }
@@ -288,18 +346,21 @@ void DL_Layer::restartTimer()
 {
 	if(sendWindow.size() > 0)// should always be true
 	{
+		//sort the send window by timestamp
+		sort(sendWindow.begin(), sendWindow.end(), compareTimeval());
+
 		timeval currentTime = {0};
 		timeval newTimeout = {0};
 		gettimeofday(&currentTime, NULL);
 
 		//check if any other frames have timed out and resend them as well
-		while(timercmp(&currentTime, &(sendWindow.top().second), >=))
+		while(timercmp(&currentTime, &(sendWindow.front().second), >=))
 		{
 			resendFrame();
 		}
 
 		//now restart time to next timeout
-		timersub(&(sendWindow.top().second), &currentTime, &newTimeout);
+		timersub(&(sendWindow.front().second), &currentTime, &newTimeout);
 
 		startTimer(newTimeout);
 	}
@@ -395,4 +456,25 @@ Frame_t* DL_Layer::byteUnstuff(string frameStream)
 	memcpy(frame->sec.trailer, &(frameStream.c_str()[FRAME_HEADER_SIZE + frame->fld.len]), FRAME_TRAILER_SIZE - DelimSize);
 
 	return frame;
+}
+
+
+void DL_Layer::sendAck(uint16_t sNum)
+{
+	Frame_t* frame = new Frame_t;
+
+	frame->fld.type = htons(eAckPacket);
+	frame->fld.seqNum = htons(sNum);
+	frame->fld.len = htons(0);
+	frame->fld.payload = NULL;
+	frame->fld.checksum = htons(computeChecksum(frame));
+
+	if(sendWindow.size() < MaxSendWindow)	//Room to send
+	{
+		sendFrame(frame);
+	}
+	else
+	{
+		waitQueue.push(frame);
+	}
 }

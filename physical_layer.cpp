@@ -12,6 +12,7 @@
 #include <iostream>
 #include <fcntl.h>
 #include "datalink_layer.h"
+#include "Output_macros.h"
 using namespace std;
 
 /*
@@ -19,8 +20,10 @@ using namespace std;
  */
 const char* PH_Layer::port = "2012";
 
+/*
+ * Global Defs
+ */
 bool gLayerOutput = true;
-#define LAYER_OUTPUT(x)		if(gLayerOutput) cout << x;
 
 int main(int argc, char *argv[])
 {
