@@ -2,16 +2,51 @@
 
 #include <iostream>
 #include <stdlib.h>
+#include <stdint.h>
 using namespace std;
+
+/*
+ * Global Defs
+ */
+bool gLayerOutput = false;
+bool gDebugOutput = false;
+
+/*
+ * static variables
+ */
+static uint8_t timeoutLength = 3;
+static uint16_t slidingWindowSize = 4;
+double errorRate = 0;
+
+void parseArgs(int argc, char* argv[])
+{
+	for(int i = 1; i < argc; i++)
+	{
+		string currentArg(argv[i]);
+		
+		if(currentArg.find("-L") != string::npos)
+		{
+			gLayerOutput = true;
+		}
+		else if(currentArg.find("-E=") != string::npos)
+		{
+			errorRate = atof(&(argv[i][3]));
+		}
+		else if(currentArg.find("-T=") != string::npos)
+		{
+			timeoutLength = atof(&(argv[i][3]));
+		}
+		else if(currentArg.find("-W=") != string::npos)
+		{
+			slidingWindowSize = atof(&(argv[i][3]));
+		}
+	}
+}
+
 
 int main(int argc, char *argv[])
 {
-
-	if(argc != 2)
-	{
-		//TODO
-		cout << "Incorrect parameters: not sure what they are yet" << endl;
-		exit(0);
-	}
-	PH_Layer::startServer(atof(argv[1]));
+	parseArgs(argc, argv);
+	
+	PH_Layer::startServer(errorRate, timeoutLength, slidingWindowSize);
 }

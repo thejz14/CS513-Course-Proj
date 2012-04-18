@@ -18,20 +18,16 @@ using namespace std;
 /*
  * Constat Defs
  */
-const char* PH_Layer::port = "2012";
-
-/*
- * Global Defs
- */
-bool gLayerOutput = true;
+const char* PH_Layer::serverPort = "2012";
 
 
-PH_Layer::PH_Layer(int32_t sockFD, double errRate, bool isServ) : socketFD(sockFD), errorRate(errRate)
+PH_Layer::PH_Layer(int32_t sockFD, double errRate, bool isServ, uint8_t timeoutLength, uint16_t slidingWindowSize) : socketFD(sockFD), errorRate(errRate)
 {
+	
 	//check error rate
-	if(errorRate > 1.0 || errorRate < 0.0)
+	if(errorRate > 100.0 || errorRate < 0.0)
 	{
-		cout << "Error: Command line error rate is invalid (must be between 0 and 1). Using default error rate of 50%.\n";
+		cout << "Error: Command line error rate is invalid (must be between 0 and 100). Using default error rate of 50%.\n";
 		errorRate = DefaultErrorRate;
 	}
 	
@@ -51,14 +47,18 @@ PH_Layer::PH_Layer(int32_t sockFD, double errRate, bool isServ) : socketFD(sockF
 	DL_Layer::ThreadParams_t* dlParams = new DL_Layer::ThreadParams_t;
 	dlParams->thisPtr = this;
 	dlParams->isServer = isServ;
+	dlParams->timeoutLen = timeoutLength;
+	dlParams->sWindowSize = slidingWindowSize;
 
-	pthread_create(&dl_thread, NULL, DL_Layer::DLCreate, reinterpret_cast<void*>(&dlParams));
+	DL_Layer* dl_layer = new DL_Layer(reinterpret_cast<void*>(dlParams));
+	
+	pthread_create(&dl_thread, NULL, DL_Layer::DLCreate, reinterpret_cast<void*>(dl_layer));
 	
 	startControlLoop();
 }
 
 
-void PH_Layer::startServer(double errRate)
+void PH_Layer::startServer(double errRate, uint8_t timeoutLength, uint16_t slidingWindowSize)
 {
 	struct addrinfo socketPref, *sockInfo;
 	int32_t listenSD = 0, clientSD = 0;
@@ -74,7 +74,7 @@ void PH_Layer::startServer(double errRate)
 	socketPref.ai_socktype = SOCK_STREAM; //TCP
 	socketPref.ai_flags = AI_PASSIVE;
 
-	if(getaddrinfo(NULL, PH_Layer::port, &socketPref, &sockInfo))	//returns 0 on success, -1 error
+	if(getaddrinfo(NULL, PH_Layer::serverPort, &socketPref, &sockInfo))	//returns 0 on success, -1 error
 	{
 		cout << "Error getting address info: " << strerror(errno) << endl;
 		exit(0);
@@ -112,7 +112,7 @@ void PH_Layer::startServer(double errRate)
 			close(listenSD);
 			
 			//should create layers and then start the control loop of recv/send
-			currentPHInstance = new PH_Layer(clientSD, errRate, true);
+			currentPHInstance = new PH_Layer(clientSD, errRate, true, timeoutLength, slidingWindowSize);
 
 			exit(0);
 
@@ -131,6 +131,39 @@ void PH_Layer::startServer(double errRate)
 	}
 }
 
+void PH_Layer::startClient(const char * serverAddress, double errRate, uint8_t timeoutLength, uint16_t slidingWindowSize)
+{
+	struct addrinfo socketPref, *servInfo;
+	int32_t sockFD = 0;
+
+	memset(&socketPref, 0x00, sizeof(socketPref));
+	socketPref.ai_family = AF_INET; //IPV4
+	socketPref.ai_socktype = SOCK_STREAM; //TCP
+	socketPref.ai_flags = AI_PASSIVE;
+
+	if(getaddrinfo(serverAddress, serverPort, &socketPref, &servInfo))	//returns 0 on success, -1 error
+	{
+		cout << "Error getting address info: " << strerror(errno) << endl;
+		exit(0);
+	}
+
+	if((sockFD  = socket(servInfo->ai_family, servInfo->ai_socktype, servInfo->ai_protocol)) < 0)
+	{
+		cout << "Error creating socket: " << strerror(errno) << endl;
+		exit(0);
+	}
+
+	if(connect(sockFD, servInfo->ai_addr, servInfo->ai_addrlen))
+	{
+		cout << "Error connecting to server: " << strerror(errno) << endl;
+		exit(0);
+	}
+
+	DEBUG_OUTPUT("Connection established\n");
+
+	PH_Layer* phLayer = new PH_Layer(sockFD, errRate, false, timeoutLength, slidingWindowSize);
+}
+
 void PH_Layer::startControlLoop()
 {
 	while(1)
@@ -145,33 +178,39 @@ void PH_Layer::tryToSend()
 {
 	int lockStatus = 0;
 
-	while((lockStatus = pthread_mutex_trylock(&sendLock)) == 0 && sendQueue.size() > 0)//try to lock the sendlock to see if there is anything to send
+	while((lockStatus = pthread_mutex_trylock(&sendLock)) == 0 && (sendQueue.size() > 0 || pthread_mutex_unlock(&sendLock)))//try to lock the sendlock to see if there is anything to send
 	{
 		string frameStream;
 		uint16_t seqNum;
+		bool isAck;
 		int bytesSent = 0;
 
-		frameStream = sendQueue.front().first; //get the frame to be sent
-		seqNum = sendQueue.front().second;
+		frameStream = sendQueue.front().first.first; //get the frame to be sent
+		seqNum = sendQueue.front().first.second;
+		isAck = sendQueue.front().second;
 		sendQueue.pop(); //pop the message off the queue;
-
+		
 		//unlock the sendLock to allow DL layer to access it
 		pthread_mutex_unlock(&sendLock);
 
 
-		if(rand() < errorRate) //Create an error in the frame
+		if((rand() % 1000) / 10. < errorRate) //Create an error in the frame
 		{
-			uint16_t byteIndex = rand() * (frameStream.size() - 2 * DL_Layer::DelimSize); //make sure error isn't in delimiters
-			byteIndex += 2;
+			uint16_t byteIndex = frameStream.size() - DL_Layer::DelimSize - 1; //make sure error isn't in delimiters
 
 			//create error (and make sure it doesnt create an unstuffed DLE byte
-			if((frameStream[byteIndex] += 1) == DL_Layer::StartDelim[0])
+			frameStream[byteIndex] += 1;
+			
+			if(isAck)
 			{
-				frameStream[byteIndex] -= 2;
+				LAYER_OUTPUT("Creating an error in the ACK for frame " << seqNum << "\n");
 			}
-
-			LAYER_OUTPUT("Creating an error in:" << seqNum << "\n")
+			else
+			{
+				LAYER_OUTPUT("Creating an error in:" << seqNum << "\n");
+			}
 		}
+		
 		if(!frameStream.empty())
 		{
 			//send the frameStream until the entire frame stream is sent
@@ -194,10 +233,10 @@ void PH_Layer::tryToRecv()
 	uint16_t numDelims = 0;
 
 	//receive all data currently stored on the socket
-	while((numBytesRecvd = recv(socketFD, recvBuffer, MaxRecvBufferSize, 0)) > 0)
+	while((numBytesRecvd = recv(socketFD, recvBuffer, MaxRecvBufferSize, 0)) > 0 && numBytesRecvd <= MaxRecvBufferSize)
 	{
 		//add the newly received data to the frame buffer
-		frameBuffer.append(recvBuffer);
+		frameBuffer.append(recvBuffer, numBytesRecvd);
 
 		//clear out the recv buffer
 		memset(recvBuffer, 0x00, MaxRecvBufferSize + 1);
@@ -206,6 +245,7 @@ void PH_Layer::tryToRecv()
 	//parse out all full frames from the frameBuffer, since it is possible to have received a partial frame so far
 	if(frameBuffer.find(DL_Layer::StartDelim) == 0)
 	{
+		
 		while((endLoc = frameBuffer.find(DL_Layer::EndDelim, endLoc)) != string::npos)
 		{
 			numDelims = 0;
@@ -237,18 +277,18 @@ void PH_Layer::tryToRecv()
 			}
 		}
 	}
-	else //error
+	else if(frameBuffer.size() > 0)
 	{
 		cout << "ERROR: The frame buffer in the physical layer is not aligned properly\n";
 	}
 }
 
-void PH_Layer::ph_send(string frameStream, uint16_t seqNum)
+void PH_Layer::ph_send(string frameStream, uint16_t seqNum, bool isAck)
 {
 	if(pthread_mutex_lock(&sendLock) == 0)
 	{
 		//add the frame to the physical layers send queue to send
-		sendQueue.push(make_pair(frameStream, seqNum));
+		sendQueue.push(make_pair(make_pair(frameStream, seqNum), isAck));
 
 		pthread_mutex_unlock(&sendLock);
 	}
@@ -261,8 +301,9 @@ void PH_Layer::ph_send(string frameStream, uint16_t seqNum)
 string PH_Layer::ph_recv()
 {
 	string frameStream = "";
+	int lockReturn = 0;
 
-	if(pthread_mutex_lock(&recvLock) == 0)
+	if((lockReturn = pthread_mutex_lock(&recvLock)) == 0)
 	{
 		if(recvQueue.size() > 0)
 		{
@@ -270,11 +311,27 @@ string PH_Layer::ph_recv()
 			recvQueue.pop();
 		}
 		pthread_mutex_unlock(&recvLock);
-
-		return frameStream;
 	}
 	else
 	{
 		cout << "ERROR: unable to get recvLock in ph_recv()\n";
+		switch(lockReturn)
+		{
+		case EINVAL:
+			cout << "1\n";
+			break;
+		case EAGAIN:
+			cout << "2\n";
+			break;
+		case EDEADLK:
+			cout << "3\n";
+			break;
+		case EPERM:
+			cout << "4\n";
+			break;
+			
+		}
 	}
+
+	return frameStream;
 }

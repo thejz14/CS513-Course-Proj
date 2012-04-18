@@ -11,11 +11,12 @@ using namespace std;
 class PH_Layer
 {
 public:
-	PH_Layer(int32_t sockFD, double errRate, bool isServer);
+	PH_Layer(int32_t sockFD, double errRate, bool isServer, uint8_t, uint16_t);
 	
-	static void startServer(double errRate);
+	static void startServer(double errRate, uint8_t, uint16_t);
+	static void startClient(const char *, double errRate, uint8_t, uint16_t);
 	
-	void ph_send(string, uint16_t);
+	void ph_send(string, uint16_t, bool);
 	string ph_recv();
 	
 private:
@@ -24,7 +25,7 @@ private:
 	void tryToSend();
 	void tryToRecv();
 
-	queue<pair<string, uint16_t> > sendQueue;
+	queue<pair<pair<string, uint16_t>, bool >  >sendQueue;
 	queue<string> recvQueue;
 
 	pthread_mutex_t sendLock;
@@ -34,8 +35,8 @@ private:
 
 	static const uint16_t MaxPendingConnections = 5;
 	static const uint32_t MaxRecvBufferSize = 2048;
-	static const double DefaultErrorRate = .5;
-	static const char* port;
+	static const double DefaultErrorRate = 50.0;
+	static const char* serverPort;
 
 	int32_t socketFD;
 	double errorRate;

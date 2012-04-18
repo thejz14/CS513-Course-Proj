@@ -1,7 +1,6 @@
 #*************************************
-#* [CS513] Group Project
+#* [CS513] Project
 #* makefile written by
-#* Hanxiong Shi - shihanxiong@wpi.edu
 #* Evan Frenn - ejfrenn@wpi.edu
 #*************************************
 
@@ -22,11 +21,12 @@ client_source = physical_layer.cpp datalink_layer.cpp client_appLayer.cpp server
 all: server client
 
 server: $(server_source)
-	g++ $(server_source) -o server -lpthread -lrt
+	g++ $(server_source) -o ejf_server -lpthread -lrt
 
 client: $(client_source)
-	g++ $(client_source) -o client -lpthread -lrt
+	g++ $(client_source) -o ejf_client -lpthread -lrt
 
 clean:
 	rm -f *.o
-	rm -f testProg
+	rm -f ejf_client
+	rm -f ejf_server

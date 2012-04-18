@@ -2,11 +2,15 @@
 
 #include <vector>
 #include <iostream>
+#include <iomanip>
 #include <netinet/in.h>
 #include <string.h>
+#include <errno.h>
+#include <cstring>
 #include <algorithm>
 #include "Output_macros.h"
 #include "server_appLayer.h"
+#include "client_appLayer.h"
 using namespace std;
 
 /*
@@ -19,8 +23,6 @@ void timeoutISR(int);
  */
 static DL_Layer* dl_layer;
 
-
-
 /*
  * Class static definitions
  */
@@ -29,36 +31,54 @@ const char* DL_Layer::EndDelim = new char[2]{0x10, 0x03};
 
 
 DL_Layer::DL_Layer(void* params): ph_layer(reinterpret_cast<PH_Layer*>(reinterpret_cast<ThreadParams_t*>(params)->thisPtr)),
-								 MaxSendWindow(4),
+								 MaxSendWindow(reinterpret_cast<ThreadParams_t*>(params)->sWindowSize),
 								 currentSeqNum(0),
 								 recvWindow(0),
-								 TimeoutDuration(3)
-{
+								 TimeoutDuration(reinterpret_cast<ThreadParams_t*>(params)->timeoutLen),
+								 framesSent(0),
+								 retransSent(0),
+								 acksSent(0),
+								 framesRcvd(0),
+								 acksRcvd(0),
+								 framesRcvdError(0),
+								 acksRcvdError(0),
+								 duplicatesRcvd(0),
+								 blocks(0)
+								 
+{								 
+	DEBUG_OUTPUT("DL layer created\n");
+
 	//initialize locks
 	pthread_mutex_init(&sendLock, NULL);
 	pthread_mutex_init(&recvLock, NULL);
 	pthread_cond_init(&sendQueueNotFull, NULL);
 	pthread_cond_init(&recvdMsg, NULL);
 
-	//timer setup for later use
-	initializeTimer();
-
 	if(reinterpret_cast<ThreadParams_t*>(params)->isServer)
 	{
-		pthread_create(&app_thread, NULL, ServerApp::SAPCreate, reinterpret_cast<void*>(this));
+		DEBUG_OUTPUT("Creating Server Layer\n");
+		ServerApp* serverApp = new ServerApp(reinterpret_cast<void*>(this));
+		
+		pthread_create(&app_thread, NULL, ServerApp::SAPCreate, reinterpret_cast<void*>(serverApp));
 	}
 	else
 	{
-		//TODO Client layer
+		DEBUG_OUTPUT("Creating App Layer\n");
+		ClientApp* clientApp = new ClientApp(reinterpret_cast<void*>(this));
+		
+		pthread_create(&app_thread, NULL, ClientApp::CAPCreate, reinterpret_cast<void*>(clientApp));
 	}
-	startControlLoop();
 }
 
 
 void DL_Layer::startControlLoop()
 {
+	//timer setup for later use
+	initializeTimer();
+		
 	while(1)
 	{
+		
 		tryToSend();
 		tryToRecv();
 	}
@@ -78,7 +98,7 @@ void DL_Layer::tryToSend()
 	}
 
 	//Now process messages from the app layer (create frames and send if possible)
-	while((lockReturn = pthread_mutex_lock(&sendLock)) == 0 && sendQueue.size() > 0)	//there are messages from the app layer to send
+	while(sendWindow.size() < MaxSendWindow && (lockReturn = pthread_mutex_lock(&sendLock)) == 0 && (sendQueue.size() > 0 || pthread_mutex_unlock(&sendLock)))	//there are messages from the app layer to send
 	{
 		//get next message
 		string message = sendQueue.front();
@@ -93,7 +113,7 @@ void DL_Layer::tryToSend()
 		cout << "ERROR: Unable to get the send lock in DL Layer tryToSend()\n";
 	}
 
-	if(sendWindow.size() < MaxSendWindow)
+	if(sendQueue.size() == 0)
 	{
 		pthread_cond_signal(&sendQueueNotFull);
 	}
@@ -111,11 +131,14 @@ void DL_Layer::tryToRecv()
 		{
 			if(frame->fld.type == eAckPacket)
 			{
+				acksRcvd++;
 				updateSendWindow(frame->fld.seqNum);
-				LAYER_OUTPUT("DL lyaer: ACK recevied for " << frame->fld.seqNum << "\n");
+				LAYER_OUTPUT("DL layer: ACK received for " << frame->fld.seqNum << "\n");
 			}
 			else
 			{
+				framesRcvd++;
+				
 				if(frame->fld.seqNum == recvWindow)
 				{
 					sendAck(frame->fld.seqNum);
@@ -125,15 +148,31 @@ void DL_Layer::tryToRecv()
 
 					LAYER_OUTPUT("DL layer:Received packet "<< frame->fld.seqNum << ". Sending Ack\n");
 				}
+				else if(frame->fld.seqNum < recvWindow && frame->fld.seqNum >= (recvWindow - MaxSendWindow))
+				{
+					sendAck(frame->fld.seqNum);
+					
+					LAYER_OUTPUT("DL layer: Acking previously ack'd frame " << frame->fld.seqNum << endl);
+				}
 				else
 				{
+					duplicatesRcvd++;
 					LAYER_OUTPUT("DL layer:Dropping packet " << frame->fld.seqNum << ". Recv window currently is: " << recvWindow << "\n");
 				}
 			}
 		}
 		else
 		{
-			LAYER_OUTPUT("DL layer: Corrupted frame received\n");
+			if(frame->fld.type == eAckPacket)
+			{
+				acksRcvdError++;
+				LAYER_OUTPUT("DL layer: Corrupted ack received. Sequence number: " << frame->fld.seqNum << "\n");
+			}
+			else
+			{
+				framesRcvdError++;
+				LAYER_OUTPUT("DL layer: Corrupted frame received. Sequence number: " << frame->fld.seqNum << "\n");
+			}
 		}
 
 		delete(frame);
@@ -154,11 +193,13 @@ void DL_Layer::updateSendWindow(uint16_t recvdSeqNum)
 
 		for(vector<pair<Frame_t*, timeval> >::iterator i = sendWindow.begin(); i != sendWindow.end(); )
 		{
-			if((*i).first->fld.seqNum <= recvdSeqNum)
+			if(ntohs((*i).first->fld.seqNum) <= recvdSeqNum)
 			{
 				//remove the frame
 				frame = (*i).first;
 				sendWindow.erase(i);
+				
+				delete(frame);
 
 				if(i == sendWindow.begin())
 				{
@@ -178,10 +219,8 @@ void DL_Layer::updateSendWindow(uint16_t recvdSeqNum)
 				restartTimer();
 			}
 			else //disable timer
-			{
-				timeval disableTimer = {0};
-
-				startTimer(disableTimer);
+			{				
+				stopTimer();
 			}
 		}
 	}
@@ -192,7 +231,7 @@ void DL_Layer::recvDataPacket(Frame_t* frame)
 	static string dataBuffer = "";
 
 	//add the payload of the frame to the databuffer
-	dataBuffer.append(frame->fld.payload);
+	dataBuffer.append(frame->fld.payload, frame->fld.len);
 
 	if(frame->fld.type == eDataEndPacket) //end of packet
 	{
@@ -242,10 +281,10 @@ void DL_Layer::createFrames(string message)
 			}
 
 			frame->fld.seqNum = htons(currentSeqNum++);
-			frame->fld.len = htons(payloadSize);
+			frame->fld.len = htons(payloadSize);			
 			frame->fld.payload = payloadPtr;
-
-			frame->fld.checksum = htons(computeChecksum(frame));
+			
+			frame->fld.checksum = htons(computeChecksum(frame, true));
 
 			if(sendWindow.size() < MaxSendWindow)	//Room to send
 			{
@@ -274,8 +313,11 @@ void DL_Layer::sendFrame(Frame_t* frame)
 	//add the frame to the send window
 	sendWindow.push_back(make_pair(frame,timeout));
 
-	ph_layer->ph_send(frameStream, frame->fld.seqNum);
+	LAYER_OUTPUT("DL Layer: Passing frame " << ntohs(frame->fld.seqNum) << " to physical layer\n");
 
+	framesSent++;
+	ph_layer->ph_send(frameStream, ntohs(frame->fld.seqNum), false);
+	
 	if(sendWindow.size() == 1)		//timer is currently not initialized
 	{
 		startTimer(timeout);
@@ -298,7 +340,7 @@ void DL_Layer::enableSigalrm()
 void DL_Layer::disableSigalrm()
 {
 	sigset_t set;
-
+	
 	sigemptyset(&set);
 	sigaddset(&set, SIGALRM);
 
@@ -326,17 +368,46 @@ void DL_Layer::initializeTimer()
 void DL_Layer::startTimer(timeval timeout)
 {
 	itimerspec time_val = {0};
+	timeval currentTime = {0};
+	timeval timeoutDuration = {0};
 
-	//convert microseconds of timeout to nanoseconds/ timeval struct to itimerspec
-	time_val.it_value.tv_sec = timeout.tv_sec;
-	time_val.it_value.tv_nsec = timeout.tv_usec * 1000;
+	gettimeofday(&currentTime, NULL);
 
-	//start timer
+	if(timercmp(&currentTime, &timeout, <))
+	{
+		timersub(&timeout , &currentTime, &timeoutDuration);	
+		
+		//convert microseconds of timeout to nanoseconds/ timeval struct to itimerspec
+		time_val.it_value.tv_sec = timeoutDuration.tv_sec;
+		time_val.it_value.tv_nsec = timeoutDuration.tv_usec * 1000;
+
+		//start timer
+		if(timer_settime(timer_id, 0, &time_val, NULL) != 0)
+		{
+			cout << "Error starting timer: " << strerror(errno) << endl;
+			cout << "tv_sec: " << time_val.it_value.tv_sec << endl;
+			cout << "tv_nsec: " << time_val.it_value.tv_nsec << endl;
+		}
+	}
+	else	//timeout occured between setting time and sending frame.. so resend timed out frames
+	{
+		restartTimer();
+	}
+	
+}
+
+void DL_Layer::stopTimer()
+{
+	itimerspec time_val = {0};
+	
+	DEBUG_OUTPUT("Timer stopped\n");
+	
 	if(timer_settime(timer_id, 0, &time_val, NULL) != 0)
 	{
-		cout << "ERROR: Unable to start timer in DL Layer restartTimer()\n";
+		cout << "ERROR: Unable to stop timer in DL Layer stopTimer()\n";
 	}
 }
+	
 
 void timeoutISR(int signNum)
 {
@@ -351,13 +422,31 @@ void timeoutISR(int signNum)
  ****************************************************************************************/
 void DL_Layer::resendFrame()
 {
+	timeval timeout;
+	
 	//sort the send window by timestamp
 	sort(sendWindow.begin(), sendWindow.end(), compareTimeval());
 
 	Frame_t* frame = sendWindow.front().first;
 	sendWindow.erase(sendWindow.begin());
+	
+	LAYER_OUTPUT("Timeout occured for frame " << ntohs(frame->fld.seqNum) << ". Resending frame\n");
 
-	sendFrame(frame);
+	//byte stuff the frame
+	string frameStream = byteStuff(frame);
+
+	//get the time the frame is being added to the window
+	gettimeofday(&timeout, NULL);
+
+	timeout.tv_sec += TimeoutDuration;
+
+	//add the frame to the send window
+	sendWindow.push_back(make_pair(frame,timeout));
+
+	LAYER_OUTPUT("DL Layer: Passing frame " << ntohs(frame->fld.seqNum) << " to physical layer\n");
+
+	retransSent++;
+	ph_layer->ph_send(frameStream, ntohs(frame->fld.seqNum), false);
 }
 
 void DL_Layer::restartTimer()
@@ -377,10 +466,8 @@ void DL_Layer::restartTimer()
 			resendFrame();
 		}
 
-		//now restart time to next timeout
-		timersub(&(sendWindow.front().second), &currentTime, &newTimeout);
-
-		startTimer(newTimeout);
+		//now restart the timer
+		startTimer(sendWindow.front().second);
 	}
 	else
 	{
@@ -388,18 +475,19 @@ void DL_Layer::restartTimer()
 	}
 }
 
-uint16_t DL_Layer::computeChecksum(Frame_t* frame)
+uint16_t DL_Layer::computeChecksum(Frame_t* frame, bool lenIsNetworkOrder)
 {
 	uint16_t chksum = 0;
+	uint16_t payloadLen = lenIsNetworkOrder ? ntohs(frame->fld.len): frame->fld.len;
 
 	//compute checksum over the frame header
 	for(int i = 0; i < FRAME_HEADER_SIZE; i++)
 	{
-		chksum += frame->sec.header[i];
+		chksum += reinterpret_cast<uint8_t*>(&(frame->sec.header))[i];
 	}
 
 	//compute checksum over the frame payload
-	for(int i = 0; i < frame->fld.len; i++)
+	for(int i = 0; i < payloadLen; i++)
 	{
 		chksum += frame->fld.payload[i];
 	}
@@ -407,7 +495,7 @@ uint16_t DL_Layer::computeChecksum(Frame_t* frame)
 	//computer checksum over the frame trailer(skip over checksum)
 	for(int i = 0; i < FRAME_TRAILER_SIZE - 2; i++)
 	{
-		chksum += frame->sec.trailer[i + 2];
+		chksum += reinterpret_cast<uint8_t*>(&(frame->sec.trailer))[i + 2];\
 	}
 
 	return chksum;
@@ -415,7 +503,7 @@ uint16_t DL_Layer::computeChecksum(Frame_t* frame)
 
 bool DL_Layer::verifyChecksum(Frame_t* frame)
 {
-	if(frame->fld.checksum == computeChecksum(frame))
+	if(frame->fld.checksum == computeChecksum(frame, false))
 	{
 		return true;
 	}
@@ -427,12 +515,13 @@ bool DL_Layer::verifyChecksum(Frame_t* frame)
 
 
 string DL_Layer::byteStuff(Frame_t* frame)
-{
+{	
 	//initialize the frame stream (frame + stuffed bytes
-	string frameStream(reinterpret_cast<char*>(frame->sec.header), (size_t)FRAME_HEADER_SIZE);
-	frameStream.append(reinterpret_cast<char*>(frame->sec.payloadPtr), (size_t)frame->fld.len);
-	frameStream.append(reinterpret_cast<char*>(frame->sec.trailer), (size_t)FRAME_TRAILER_SIZE);
-
+	string frameStream;
+	frameStream.append(reinterpret_cast<char*>(&(frame->sec.header)), (size_t)FRAME_HEADER_SIZE);
+	frameStream.append(reinterpret_cast<char*>(frame->sec.payloadPtr), (size_t)ntohs(frame->fld.len));
+	frameStream.append(reinterpret_cast<char*>(&(frame->sec.trailer)), (size_t)FRAME_TRAILER_SIZE);
+	
 	//now sort through and byte stuff the stream (start off after the start delimiters)
 	for(int i = DelimSize; i < frameStream.size() - DelimSize; i++)
 	{
@@ -459,7 +548,7 @@ Frame_t* DL_Layer::byteUnstuff(string frameStream)
 	}
 
 	//copy over the header
-	memcpy(&(frame->sec.header[DelimSize]), &(frameStream.c_str()[DelimSize]), FRAME_HEADER_SIZE - DelimSize);
+	memcpy(&(frame->sec.header), frameStream.c_str(), FRAME_HEADER_SIZE);
 
 	//convert header parameters to host endianness
 	frame->fld.type = ntohs(frame->fld.type);
@@ -471,8 +560,10 @@ Frame_t* DL_Layer::byteUnstuff(string frameStream)
 	memcpy(frame->sec.payloadPtr, &(frameStream.c_str()[FRAME_HEADER_SIZE]), frame->fld.len);
 
 	//copy over the trailer
-	memcpy(frame->sec.trailer, &(frameStream.c_str()[FRAME_HEADER_SIZE + frame->fld.len]), FRAME_TRAILER_SIZE - DelimSize);
+	memcpy(&(frame->sec.trailer), &(frameStream.c_str()[FRAME_HEADER_SIZE + frame->fld.len]), FRAME_TRAILER_SIZE);
 
+	frame->fld.checksum = ntohs(frame->fld.checksum);
+	
 	return frame;
 }
 
@@ -480,29 +571,33 @@ Frame_t* DL_Layer::byteUnstuff(string frameStream)
 void DL_Layer::sendAck(uint16_t sNum)
 {
 	Frame_t* frame = new Frame_t;
+	string stuffedFrame;
 
 	frame->fld.type = htons(eAckPacket);
 	frame->fld.seqNum = htons(sNum);
 	frame->fld.len = htons(0);
 	frame->fld.payload = NULL;
-	frame->fld.checksum = htons(computeChecksum(frame));
-
-	if(sendWindow.size() < MaxSendWindow)	//Room to send
-	{
-		sendFrame(frame);
-	}
-	else
-	{
-		waitQueue.push(frame);
-	}
+	frame->fld.checksum = htons(computeChecksum(frame, true));
+	
+	stuffedFrame = byteStuff(frame);
+	
+	acksSent++;
+	ph_layer->ph_send(stuffedFrame, ntohs(frame->fld.seqNum), true);
 }
 
 void DL_Layer::dl_send(string message)
 {
+	bool haveIncrementedCounter = false;
+	
 	pthread_mutex_lock(&sendLock);
 
-	while(sendWindow.size() + waitQueue.size() == MaxSendWindow)
+	while(sendQueue.size() > 0)
 	{
+		if(!haveIncrementedCounter)		//incase of uninteded wakeup for another reason
+		{
+			blocks++;
+			haveIncrementedCounter = true;
+		}
 		pthread_cond_wait(&sendQueueNotFull, &sendLock);
 	}
 
@@ -511,21 +606,42 @@ void DL_Layer::dl_send(string message)
 	pthread_mutex_unlock(&sendLock);
 }
 
-string DL_Layer::dl_recv()
+string DL_Layer::dl_recv(bool block)
 {
-	string message;
+	string message = "";
 
 	pthread_mutex_lock(&recvLock);
 
-	while(recvQueue.size() == 0)
+	if(block)
 	{
-		pthread_cond_wait(&recvdMsg, &recvLock);
-	}
+		while(recvQueue.size() == 0)
+		{
+			pthread_cond_wait(&recvdMsg, &recvLock);
+		}
 
-	message = recvQueue.front();
-	recvQueue.pop();
+		message = recvQueue.front();
+		recvQueue.pop();
+	}
+	else if(recvQueue.size() > 0)
+	{
+		message = recvQueue.front();
+		recvQueue.pop();
+	}
 
 	pthread_mutex_unlock(&recvLock);
 
 	return message;
+}
+
+void DL_Layer::writeStats()
+{
+	cout << "Total number of data frames sent:" << framesSent << endl;
+	cout << "Total number of retransmissions sent:" << retransSent << endl;
+	cout << "Total number of acknowledgements sent:" << acksSent << endl;
+	cout << "Total number of data frames received correctly (inluding duplicates):" << framesRcvd << endl;
+	cout << "Total number of acknowledgements received correctly:" << acksRcvd << endl;
+	cout << "Total number of data frames received with error:" << framesRcvdError << endl;
+	cout << "Total number of acknowledgements received with error:" << acksRcvdError << endl;
+	cout << "Total number of duplicate frames received:" << duplicatesRcvd << endl;
+	cout << "Total number of times the application layer was blocked in dl_send():" << blocks << endl;
 }
