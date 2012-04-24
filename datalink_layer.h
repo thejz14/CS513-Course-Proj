@@ -61,7 +61,7 @@ public:
 	void restartTimer(void); //helper method for timerISR() used to restart the timer after a time out
 	
 	void writeStats(void);
-	void writeStatesToFile(string);
+	void writeStatsToFile(string);
 
 	static const char* StartDelim;
 	static const char* EndDelim;

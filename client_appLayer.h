@@ -49,6 +49,8 @@ private:
 	void downloadCancelResponseHandler(string);
 	void listHandler();
 	void listResponseHandler(string);
+	void logoutHandler();
+	void logoutResponseHandler(string);
 	
 	pthread_mutex_t ioLock; // used to lock output to the console
 	pthread_mutex_t commandSendLock; // used to lock commands read in from the console between the IO thread and background thread

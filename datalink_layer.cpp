@@ -4,6 +4,7 @@
 #include <iostream>
 #include <iomanip>
 #include <netinet/in.h>
+#include <fstream>
 #include <string.h>
 #include <errno.h>
 #include <cstring>
@@ -29,7 +30,9 @@ static DL_Layer* dl_layer;
 const char* DL_Layer::StartDelim = new char[2]{0x10, 0x02};
 const char* DL_Layer::EndDelim = new char[2]{0x10, 0x03};
 
-
+/*
+ * Created in the physical of either the startServer() or startClient() command
+ */
 DL_Layer::DL_Layer(void* params): ph_layer(reinterpret_cast<PH_Layer*>(reinterpret_cast<ThreadParams_t*>(params)->thisPtr)),
 								 MaxSendWindow(reinterpret_cast<ThreadParams_t*>(params)->sWindowSize),
 								 currentSeqNum(0),
@@ -644,4 +647,22 @@ void DL_Layer::writeStats()
 	cout << "Total number of acknowledgements received with error:" << acksRcvdError << endl;
 	cout << "Total number of duplicate frames received:" << duplicatesRcvd << endl;
 	cout << "Total number of times the application layer was blocked in dl_send():" << blocks << endl;
+}
+
+void DL_Layer::writeStatsToFile(string filename)
+{
+	ofstream outFile;
+	outFile.open(filename.c_str(), ofstream::out | ofstream::trunc);
+	
+	outFile << "Total number of data frames sent:" << framesSent << endl;
+	outFile << "Total number of retransmissions sent:" << retransSent << endl;
+	outFile << "Total number of acknowledgements sent:" << acksSent << endl;
+	outFile << "Total number of data frames received correctly (inluding duplicates):" << framesRcvd << endl;
+	outFile << "Total number of acknowledgements received correctly:" << acksRcvd << endl;
+	outFile << "Total number of data frames received with error:" << framesRcvdError << endl;
+	outFile << "Total number of acknowledgements received with error:" << acksRcvdError << endl;
+	outFile << "Total number of duplicate frames received:" << duplicatesRcvd << endl;
+	outFile << "Total number of times the application layer was blocked in dl_send():" << blocks << endl;
+	
+	outFile.close();
 }

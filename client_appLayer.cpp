@@ -195,7 +195,11 @@ void ClientApp::startIOControlLoop()
 			{
 				cout << "ERROR: Unable to get the IO lock";
 			}
-			break;
+		}
+		else if(command == "logout")
+		{
+			logoutHandler();
+			waitForResponse();
 		}
 		else
 		{
@@ -244,6 +248,10 @@ void ClientApp::waitForResponse()
 		
 	case ServerApp::eList:
 		listResponseHandler(response);
+		break;
+		
+	case ServerApp::eLogout:
+		logoutResponseHandler(response);
 		break;
 	}
 }
@@ -528,5 +536,41 @@ void ClientApp::listResponseHandler(string response)
 	else
 	{
 		//TODO
+	}
+}
+
+void ClientApp::logoutHandler()
+{
+	string filename, message;		
+	message = (char)(ServerApp::eLogout);
+	
+	if(isDownloadPending)
+	{
+		CLIENT_OUT(ioLock, "Please pause or cancel all downloads before logging out\n");
+	}
+	else
+	{
+		if(pthread_mutex_lock(&commandSendLock) == 0)
+		{	
+			sendMessageQueue.push(message);
+			pthread_mutex_unlock(&commandSendLock);
+		}
+		else
+		{
+			CLIENT_OUT(ioLock, "ERROR:Unable to get message lock in client App layer\n");
+		}
+	}
+}
+
+void ClientApp::logoutResponseHandler(string response)
+{
+	switch(response[1])
+	{
+	case ServerApp::eLogoutSuccess:
+		CLIENT_OUT(ioLock, "Logout successful\n");
+		break;
+	case ServerApp::eLogoutNotLoggedIn:
+		CLIENT_OUT(ioLock, "No user is currently logged in\n");
+		break;
 	}
 }

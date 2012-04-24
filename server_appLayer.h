@@ -23,6 +23,7 @@ public:
 	enum {eDownloadPauseSuccess = 0x00, eDownloadPauseError = 0x01};
 	enum {eDownloadResumeSuccess = 0x00, eDownloadResumeInvalid = 0x01, eDownloadResumeBusy = 0x02, eDownloadResumeSizeError};
 	enum {eDownloadCancelSuccess = 0x00, eDownloadCancelDLSuccess = 0x01, eDownloadCancelFNF = 0x02};
+	enum {eLogoutSuccess = 0x00, eLogoutNotLoggedIn = 0x01};
 	
 	void startControlLoop();
 	
@@ -33,7 +34,8 @@ private:
 	void handleDownloadPause(void);
 	void handleDownloadResume(string);
 	void handleDownloadCancel(string);
-	void handleList();
+	void handleList(void);
+	void handleLogout(void);
 	
 	bool userLoggedIn;
 	string loggedInUser;

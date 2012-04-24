@@ -22,8 +22,7 @@ const char* PH_Layer::serverPort = "2012";
 
 
 PH_Layer::PH_Layer(int32_t sockFD, double errRate, bool isServ, uint8_t timeoutLength, uint16_t slidingWindowSize) : socketFD(sockFD), errorRate(errRate)
-{
-	
+{	
 	//check error rate
 	if(errorRate > 100.0 || errorRate < 0.0)
 	{

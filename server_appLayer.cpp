@@ -88,7 +88,9 @@ void ServerApp::startControlLoop()
 				{
 					handleNotLoggedIn();
 				}
-				break;	
+				break;
+			case eLogout:
+				handleLogout();
 			}
 		}
 		
@@ -431,6 +433,29 @@ void ServerApp::handleList()
 	//now copy over real number of entries
 	numEntries = ntohl(numEntries);
 	response.replace(1, 4, (const char*)&(numEntries));
+	
+	//send response
+	dl_layer->dl_send(response);
+}
+
+void ServerApp::handleLogout()
+{
+	string response;
+	response = (char)eLogout;
+	
+	if(userLoggedIn)
+	{
+		string filename = loggedInUser;
+		filename.append("-Stats");
+		
+		dl_layer->writeStatsToFile(filename);
+		
+		response += (char)eLogoutSuccess;
+	}
+	else
+	{
+		response += (char)eLogoutNotLoggedIn;
+	}
 	
 	//send response
 	dl_layer->dl_send(response);
